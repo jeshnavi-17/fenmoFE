@@ -1,78 +1,103 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { getExpenses, addExpense as apiAddExpense } from '../api/expenses'
+import { useEffect, useState } from "react";
+import { getExpenses, getCategorySummary, addExpense } from "../api/expenses";
 
-/**
- * Custom hook that manages all expense state and API interactions.
- */
 export function useExpenses() {
-  const [expenses, setExpenses] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [categoryFilter, setCategoryFilter] = useState('')
-  const [sortDateDesc, setSortDateDesc] = useState(true)   // true = newest first
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [submitError, setSubmitError] = useState(null)
+  const [expenses, setExpenses] = useState([]);
+  const [categorySummary, setCategorySummary] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [total, setTotal] = useState(0);
 
-  // Fetch expenses whenever the category filter changes
-  const fetchExpenses = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  const [categoryFilter, setCategoryFilter] = useState("");
+  const [sortDateDesc, setSortDateDesc] = useState(true);
+
+  const [page, setPage] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+
+  const fetchExpenses = async () => {
     try {
-      const data = await getExpenses({ category: categoryFilter, sortDateDesc })
-      setExpenses(data)
+      setLoading(true);
+      setError(null);
+
+      const data = await getExpenses({
+        category: categoryFilter,
+        page,
+        sort: `date,${sortDateDesc ? "desc" : "asc"}`,
+      });
+
+      const content = data.content || [];
+
+      setExpenses(content);
+      setTotalPages(data.totalPages || 0);
+
+      if (page >= data.totalPages && data.totalPages > 0) {
+        setPage(data.totalPages - 1);
+      }
     } catch (err) {
-      setError(err.message)
+      setError(err.message);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [categoryFilter, sortDateDesc])
+  };
+
+  const fetchSummary = async () => {
+    try {
+      const data = await getCategorySummary();
+      setCategorySummary(data || []);
+
+      const cats = data.map((item) => item.category);
+      setCategories(cats);
+
+      if (!categoryFilter) {
+        const grandTotal = data.reduce((sum, item) => sum + item.total, 0);
+        setTotal(grandTotal);
+      } else {
+        const selected = data.find(
+          (item) => item.category === categoryFilter
+        );
+        setTotal(selected ? selected.total : 0);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAddExpense = async (expense) => {
+    try {
+      setIsSubmitting(true);
+      setSubmitError(null);
+
+      await addExpense(expense);
+
+      setPage(0);
+
+      // ✅ sequential refresh (correct fix)
+      await fetchExpenses();
+      await fetchSummary();
+
+    } catch (err) {
+      setSubmitError(err.message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   useEffect(() => {
-    fetchExpenses()
-  }, [fetchExpenses])
+    fetchExpenses();
+  }, [categoryFilter, page, sortDateDesc]);
 
-  // Unique categories derived from full expense list (for the filter dropdown)
-  const categories = useMemo(() => {
-    const all = expenses.map((e) => e.category).filter(Boolean)
-    return [...new Set(all)].sort()
-  }, [expenses])
+  useEffect(() => {
+    fetchSummary();
+  }, [categoryFilter]);
 
-  // Total of currently displayed expenses
-  const total = useMemo(() => {
-    return expenses.reduce((sum, e) => sum + Number(e.amount), 0)
-  }, [expenses])
-
-  // Per-category summary
-  const categorySummary = useMemo(() => {
-    const map = {}
-    for (const e of expenses) {
-      const cat = e.category || 'Uncategorized'
-      map[cat] = (map[cat] || 0) + Number(e.amount)
-    }
-    return Object.entries(map)
-      .map(([category, amount]) => ({ category, amount }))
-      .sort((a, b) => b.amount - a.amount)
-  }, [expenses])
-
-  // Add a new expense via API then re-fetch
-  const addExpense = useCallback(
-    async (formData) => {
-      setIsSubmitting(true)
-      setSubmitError(null)
-      try {
-        await apiAddExpense(formData)
-        // Re-fetch to get the latest list (including the new entry from the server)
-        await fetchExpenses()
-        return true // success
-      } catch (err) {
-        setSubmitError(err.message)
-        return false // failure
-      } finally {
-        setIsSubmitting(false)
-      }
-    },
-    [fetchExpenses],
-  )
+  useEffect(() => {
+    setPage(0);
+  }, [categoryFilter, sortDateDesc]);
 
   return {
     expenses,
@@ -87,7 +112,10 @@ export function useExpenses() {
     categorySummary,
     isSubmitting,
     submitError,
-    addExpense,
+    addExpense: handleAddExpense,
     refetch: fetchExpenses,
-  }
+    page,
+    setPage,
+    totalPages,
+  };
 }
